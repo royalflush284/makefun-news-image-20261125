@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""THE CAPITAL STANDARD — NI25 F1 compose (fresh, this session). PIL local only."""
+"""THE CAPITAL STANDARD — NI25 F1 compose (fresh, this session). PIL local only.
+
+Authorship note: this module is written and revised directly in the repo.
+Its drawing logic and output are unchanged by this clarification.
+"""
 import sys
 from PIL import Image, ImageDraw, ImageFont
 
