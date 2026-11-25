@@ -1,417 +1,603 @@
-#!/usr/bin/env python3
-"""THE CAPITAL STANDARD — NI25 F1 compose (fresh, this session). PIL local only.
+"""THE CAPITAL STANDARD - NI25 front page painter, Final 1.
 
-Authorship note: this module is written and revised directly in the repo.
-Its drawing logic and output are unchanged by this clarification.
+This module paints a complete one-day newspaper front page onto a
+1024 by 1024 pixel canvas and saves it as a PNG using nothing beyond
+the Python standard library.  The picture is built procedurally:
+every tanker, radar dome, skyline and coral branch is drawn here
+from rectangles, discs and strokes held in a plain bytearray frame.
+
+Running the module writes entry.png next to itself.
 """
-import sys
-from PIL import Image, ImageDraw, ImageFont
 
-FD = "/home/hatch/workspace/tools/bedah-19nov/news-image/fonts/"
-def F(name, size):
-    return ImageFont.truetype(FD + name, size)
-PF_BLACK = "PlayfairDisplay-Black.ttf"
-PF_BOLD = "PlayfairDisplay-Bold.ttf"
-AR = "Archivo.ttf"
-AR_B = "Archivo-Bold.ttf"
+import os
+import struct
+import zlib
 
-W = H = 1024
-INK = (18, 38, 74)        # blue ink
-INK2 = (28, 58, 110)
-STEEL = (96, 110, 128)    # steel grey
-STEEL_D = (58, 68, 84)
-PAPER = (246, 244, 238)
-PAPER2 = (236, 238, 240)
-GOLD = (176, 138, 52)
-RED = (158, 44, 40)
-TEAL = (28, 110, 104)
-GREEN = (52, 110, 62)
-SKY = (120, 164, 205)
+WIDTH = 1024
+HEIGHT = 1024
 
-def wrap(d, text, font, maxw):
-    words, lines, cur = text.split(), [], ""
-    for w in words:
-        t = (cur + " " + w).strip()
-        if d.textlength(t, font=font) <= maxw:
-            cur = t
-        else:
-            if cur: lines.append(cur)
-            cur = w
-    if cur: lines.append(cur)
-    return lines
+INK = (18, 38, 74)
+STEEL = (96, 110, 128)
+PAPER = (247, 243, 233)
+RED = (164, 32, 40)
+GOLD = (176, 132, 44)
+WHITE = (252, 252, 250)
+BLACK = (22, 22, 24)
+SKY = (168, 196, 222)
 
-def text_block(d, xy, text, font, fill, maxw, leading=1.12, max_lines=None):
-    x, y = xy
-    lines = wrap(d, text, font, maxw)
-    if max_lines: lines = lines[:max_lines]
-    lh = int(font.size * leading)
-    for ln in lines:
-        d.text((x, y), ln, font=font, fill=fill)
-        y += lh
-    return y
+FRAME = bytearray(WIDTH * HEIGHT * 3)
 
-# ---------- v2: rich layered scene illustrations (specific to each story) ----------
-def _lerp(a, b, t):
-    return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
 
-def scene(d, box, kind, c1, c2):
-    x0, y0, x1, y1 = box
-    w, h = x1 - x0, y1 - y0
-    # sky/ground gradient bands (layered depth)
-    for i in range(6):
-        d.rectangle([x0, y0 + h * i // 6, x1, y0 + h * (i + 1) // 6 + 1], fill=_lerp(c1, c2, i / 5))
-    cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
-    WHT = (246, 245, 238); DRK = (24, 26, 32); GLD = (250, 220, 120)
-    if kind == "plane":  # AWACS over Poland: sky, clouds, radar rings, runway
-        for (ex, ey, ew) in [(x0 + w//8, y0 + h//5, w//5), (x0 + 3*w//5, y0 + h//7, w//4), (x0 + w//3, y0 + h//2, w//6)]:
-            d.ellipse([ex, ey, ex + ew, ey + h//5], fill=(235, 240, 246))
-        for r in (h//5, h//3, h//2):
-            d.ellipse([cx - r, cy - r//2 - h//6, cx + r, cy + r//2 - h//6], outline=(200, 225, 250), width=1)
-        d.ellipse([x0 + w//8, cy - h//9, x1 - w//8, cy + h//7], fill=WHT)
-        d.polygon([(x0 + w//8, cy), (x0 + w//16, cy - h//3), (x0 + w//5, cy - h//12)], fill=WHT)
-        d.polygon([(cx - w//14, cy + h//8), (cx - w//4, cy + h//3), (cx + w//10, cy + h//7)], fill=(225, 228, 232))
-        d.ellipse([cx - w//11, cy - h//3, cx + w//11, cy - h//7], fill=(210, 214, 220), outline=DRK, width=1)
-        for wx in range(x0 + w//4, x0 + 3*w//5, max(6, w//16)):
-            d.ellipse([wx, cy, wx + 4, cy + 4], fill=(90, 140, 190))
-        d.rectangle([x0, y1 - h//8, x1, y1], fill=(52, 56, 62))
-        for dx in range(x0 + 6, x1 - 6, max(10, w//10)):
-            d.rectangle([dx, y1 - h//16 - 1, dx + 6, y1 - h//16 + 1], fill=GLD)
-    elif kind == "ship":  # Hormuz: three tankers, sea lanes, mine markers
-        for wy in range(y0 + h//2, y1 - 2, max(4, h//9)):
-            for wx in range(x0 + 4, x1 - 10, max(14, w//7)):
-                d.arc([wx, wy, wx + 10, wy + 5], 0, 180, fill=(170, 205, 230), width=1)
-        for i, fx in enumerate((0.24, 0.52, 0.8)):
-            tx = x0 + int(w * fx); base = y0 + int(h * (0.52 + 0.1 * (i % 2)))
-            sc = max(14, w // 7)
-            d.polygon([(tx - sc, base), (tx + sc, base), (tx + sc - 8, base + h//6), (tx - sc + 8, base + h//6)], fill=DRK)
-            d.rectangle([tx - sc + 4, base - h//7, tx + sc - 4, base], fill=(168, 60, 44))
-            d.rectangle([tx - 3, base - h//3, tx + 3, base - h//7], fill=DRK)
-        for (mx, my) in [(x0 + w//6, y0 + 3*h//4), (x0 + 2*w//3, y0 + 4*h//5), (x0 + 5*w//6, y0 + 2*h//3)]:
-            d.ellipse([mx - 4, my - 4, mx + 4, my + 4], outline=(250, 90, 70), width=2)
-            d.line([mx - 6, my, mx + 6, my], fill=(250, 90, 70), width=1)
-        d.line([x0 + 4, y0 + h//4, x1 - 4, y0 + h//4], fill=(200, 225, 245), width=1)
-    elif kind == "city":  # Gaza: skyline, lit windows, smoke plumes, drone overhead
-        for i, hh in enumerate([0.55, 0.85, 0.66, 0.95, 0.6, 0.78]):
-            bx = x0 + 4 + i * (w - 8) // 6; bw = (w - 8) // 7
-            top = y1 - int(h * hh) - h//10
-            d.rectangle([bx, top, bx + bw, y1 - h//10], fill=(18, 20, 28))
-            for wy in range(top + 4, y1 - h//10 - 4, max(5, h//8)):
-                for wx in range(bx + 3, bx + bw - 2, max(5, w//22)):
-                    if (wx * 7 + wy * 3) % 5:
-                        d.point((wx, wy), fill=GLD)
-        for px in (x0 + w//4, x0 + 3*w//5):
-            d.polygon([(px, y1 - int(h*0.85)), (px + w//14, y0 + h//8), (px + w//6, y0 + h//6), (px + w//10, y1 - int(h*0.8))], fill=(178, 172, 166))
-        dx, dy = x0 + 3*w//4, y0 + h//6
-        d.polygon([(dx - 12, dy), (dx + 12, dy), (dx + 4, dy + 5), (dx - 4, dy + 5)], fill=DRK)
-        d.line([dx - 16, dy - 3, dx + 16, dy - 3], fill=DRK, width=2)
-        d.rectangle([x0, y1 - h//10, x1, y1], fill=(52, 44, 40))
-    elif kind == "oil":  # Iraq oilfields: derricks, storage tanks, pipeline, flare
-        for i in range(3):
-            bx = x0 + w//8 + i * w//3
-            d.polygon([(bx, y1 - h//8), (bx + w//16, y0 + h//5), (bx + w//8, y1 - h//8)], outline=DRK, width=2)
-            d.line([bx + w//32, y0 + h//2, bx + 3*w//32, y0 + h//2], fill=DRK, width=1)
-        for i in range(2):
-            tx = x0 + w//5 + i * w//3
-            d.rectangle([tx, y1 - h//3, tx + w//6, y1 - h//8], fill=(205, 208, 212), outline=DRK)
-            d.ellipse([tx, y1 - h//3 - 3, tx + w//6, y1 - h//3 + 3], fill=(225, 228, 232), outline=DRK)
-        d.line([x0 + 4, y1 - h//6, x1 - 4, y1 - h//6], fill=(250, 170, 60), width=3)
-        fx, fy = x0 + 6*w//7, y0 + h//6
-        d.polygon([(fx, fy + h//5), (fx - 5, fy), (fx, fy - h//7), (fx + 5, fy), ], fill=(250, 140, 40))
-    elif kind == "chart":  # Nvidia: bars + soaring line + axis
-        base = y1 - h//7
-        for i, bh in enumerate((0.25, 0.4, 0.34, 0.58, 0.86)):
-            bx = x0 + w//10 + i * w//6
-            d.rectangle([bx, base - int(h * bh), bx + w//9, base], fill=(70, 190, 120) if i == 4 else (90, 120, 105))
-        pts = [(x0 + 6, base - h//8), (cx - w//6, base - h//3), (cx, base - h//4), (cx + w//5, base - 3*h//5), (x1 - 8, base - 4*h//5)]
-        d.line(pts, fill=(250, 225, 90), width=3)
-        d.polygon([(x1 - 8, base - 4*h//5), (x1 - 16, base - 4*h//5 + 2), (x1 - 10, base - 4*h//5 + 8)], fill=(250, 225, 90))
-        d.line([x0 + 4, base, x1 - 4, base], fill=WHT, width=1)
-    elif kind == "shield":  # war-data: shield over bar-chart of loss + cross markers
-        d.polygon([(cx, y0 + 3), (cx + w//5, y0 + h//8), (cx + w//5, cy + h//8), (cx, y1 - 3), (cx - w//5, cy + h//8), (cx - w//5, y0 + h//8)], outline=WHT, width=3)
-        for i, bh in enumerate((0.3, 0.5, 0.72)):
-            bx = cx - w//9 + i * w//14
-            d.rectangle([bx, cy + h//6 - int(h * bh * 0.5), bx + w//20, cy + h//6], fill=(250, 190, 90))
-        d.text((cx - 4, y0 + h//6), "+", font=F(AR_B, 12), fill=WHT)
-    elif kind == "tank":  # Lynx KF41: armoured vehicle profile, tracks, turret
-        gy = y1 - h//5
-        d.polygon([(x0 + w//8, gy - h//4), (x0 + w//3, gy - h//4), (x0 + 2*w//5, gy - 2*h//5), (x0 + 3*w//5, gy - 2*h//5), (x0 + 5*w//8, gy - h//4), (x1 - w//8, gy - h//4), (x1 - w//6, gy), (x0 + w//6, gy)], fill=(58, 74, 52))
-        d.rectangle([x0 + w//3, gy - 3*h//5, x0 + 3*w//5, gy - 2*h//5], fill=(66, 84, 60))
-        d.line([x0 + 3*w//5, gy - h//2, x1 - w//10, gy - 3*h//5], fill=DRK, width=3)
-        d.rectangle([x0 + w//7, gy, x1 - w//7, gy + h//6], fill=(38, 40, 38))
-        for wx in range(x0 + w//6, x1 - w//6, max(8, w//12)):
-            d.ellipse([wx, gy + 2, wx + 7, gy + h//6 - 2], outline=(150, 155, 150), width=1)
-        d.line([x0, gy + h//5, x1, gy + h//5], fill=(90, 84, 70), width=2)
-    elif kind == "ball":  # Madrid: stadium bowl, floodlights, ball, scoreboard arc
-        d.pieslice([x0 + w//8, y0 + h//6, x1 - w//8, y1 + h//3], 180, 360, fill=(52, 60, 78))
-        for r in range(3):
-            d.arc([x0 + w//8 + r * 4, y0 + h//6 + r * 3, x1 - w//8 - r * 4, y1 + h//3], 180, 360, fill=(200, 205, 215))
-        for fx in (x0 + w//7, x1 - w//7):
-            d.line([fx, y1 - h//4, fx, y0 + h//8], fill=WHT, width=2)
-            d.ellipse([fx - 6, y0 + h//10, fx + 6, y0 + h//5], fill=(255, 250, 210))
-        d.rectangle([x0, y1 - h//4, x1, y1], fill=(34, 96, 52))
-        d.ellipse([cx - h//5, y1 - h//2, cx + h//5, y1 - h//10], fill=WHT, outline=DRK)
-        d.polygon([(cx, y1 - 3*h//10 - 4), (cx + 5, y1 - 3*h//10), (cx, y1 - 3*h//10 + 5), (cx - 5, y1 - 3*h//10)], fill=DRK)
-    elif kind == "coral":  # GBR reef: branching coral, fish, seabed, sun rays
-        for sx in (x0 + w//5, x0 + w//2, x0 + 4*w//5):
-            d.line([sx, y0, sx + w//12, y1 - h//3], fill=(200, 230, 240), width=2)
-        for i in range(5):
-            bx = x0 + 8 + i * (w - 16) // 5; bh = h * (0.45 + 0.1 * (i % 3))
-            col = (255, 140 + 20 * (i % 2), 105)
-            d.line([bx, y1 - h//8, bx, y1 - int(bh)], fill=col, width=3)
-            d.line([bx, y1 - int(bh * 0.7), bx - 8, y1 - int(bh * 0.9)], fill=col, width=2)
-            d.line([bx, y1 - int(bh * 0.7), bx + 8, y1 - int(bh)], fill=col, width=2)
-            d.line([bx, y1 - int(bh * 0.45), bx + 7, y1 - int(bh * 0.62)], fill=col, width=2)
-            d.ellipse([bx - 2, y1 - int(bh) - 3, bx + 2, y1 - int(bh) + 1], fill=(255, 200, 130))
-        for (fx, fy) in [(x0 + w//3, y0 + h//3), (x0 + 2*w//3, y0 + h//4), (x0 + w//2, y0 + h//2)]:
-            d.polygon([(fx, fy), (fx + 9, fy + 3), (fx, fy + 6), (fx + 3, fy + 3)], fill=(250, 200, 80))
-        d.rectangle([x0, y1 - h//8, x1, y1], fill=(16, 74, 96))
-    elif kind == "jet":  # Boeing 737-8: airliner profile, windows, tail, clouds
-        for (ex, ey, ew) in [(x0 + w//10, y1 - h//4, w//4), (x0 + 3*w//5, y0 + h//6, w//5)]:
-            d.ellipse([ex, ey, ex + ew, ey + h//6], fill=(225, 233, 242))
-        d.polygon([(x0 + w//12, cy + h//10), (x0 + w//3, cy - h//8), (x1 - w//8, cy - h//10), (x1 - w//16, cy + h//12), (x0 + w//4, cy + h//6)], fill=WHT)
-        d.polygon([(x1 - w//8, cy - h//10), (x1 - w//5, cy - h//2), (x1 - w//16, cy - h//10)], fill=(200, 60, 50))
-        d.polygon([(cx - w//16, cy + h//12), (cx - w//4, cy + h//3), (cx + w//12, cy + h//10)], fill=(215, 220, 226))
-        for wx in range(x0 + w//4, x1 - w//4, max(6, w//18)):
-            d.ellipse([wx, cy - h//16, wx + 3, cy - h//16 + 3], fill=(70, 110, 160))
-    elif kind == "blast":  # Colombia car bomb: street, car, burst, broken windows
-        d.rectangle([x0, y1 - h//5, x1, y1], fill=(70, 62, 58))
-        for i, hh in enumerate((0.6, 0.8, 0.5)):
-            bx = x0 + 4 + i * w // 4
-            d.rectangle([bx, y1 - int(h * hh), bx + w//6, y1 - h//5], fill=(40, 42, 50))
-            d.line([bx + 3, y1 - int(h * hh) + 4, bx + w//6 - 3, y1 - h//5 - 6], fill=(200, 200, 205), width=1)
-        bx2, by2 = cx + w//8, y1 - h//3
-        for a in range(0, 360, 30):
-            import math
-            d.line([bx2, by2, bx2 + int(w * 0.16 * math.cos(math.radians(a))), by2 + int(h * 0.3 * math.sin(math.radians(a)))], fill=(250, 170, 60), width=2)
-        d.ellipse([bx2 - w//10, by2 - h//5, bx2 + w//10, by2 + h//5], fill=(250, 205, 110))
-        d.rectangle([x0 + w//6, y1 - h//3, x0 + w//3, y1 - h//5], fill=(30, 30, 34))
-        d.ellipse([x0 + w//6 + 3, y1 - h//5 - 3, x0 + w//6 + 9, y1 - h//5 + 3], fill=DRK)
-        d.ellipse([x0 + w//3 - 9, y1 - h//5 - 3, x0 + w//3 - 3, y1 - h//5 + 3], fill=DRK)
-    elif kind == "doc":  # sanctions / PCE: document, seal, ruled lines, stamp
-        d.rectangle([cx - w//5, y0 + 4, cx + w//5, y1 - 4], fill=(246, 244, 236), outline=(120, 118, 110))
-        d.rectangle([cx - w//5 + 5, y0 + 9, cx + w//10, y0 + 15], fill=(150, 60, 55))
-        for i in range(3):
-            d.line([cx - w//5 + 5, y0 + 22 + i * max(5, h//7), cx + w//5 - 5, y0 + 22 + i * max(5, h//7)], fill=(110, 110, 115), width=1)
-        d.ellipse([cx + w//12, y1 - h//3, cx + w//5, y1 - h//8], outline=(178, 44, 40), width=2)
-        d.line([cx + w//12 + 3, y1 - h//4, cx + w//5 - 3, y1 - h//5], fill=(178, 44, 40), width=1)
-    else:
-        d.ellipse([cx - w//6, cy - h//4, cx + w//6, cy + h//4], fill=(250, 215, 110))
+def _paint(x, y, colour):
+    if 0 <= x < WIDTH and 0 <= y < HEIGHT:
+        at = (y * WIDTH + x) * 3
+        FRAME[at] = colour[0]
+        FRAME[at + 1] = colour[1]
+        FRAME[at + 2] = colour[2]
 
-REGION_COLORS = {
-    "EUROPE": (44, 92, 160), "MIDDLE EAST": (178, 84, 40), "AFRICA": (150, 110, 30),
-    "AMERICAS": (44, 130, 90), "ASIA": (130, 60, 140), "SOUTH ASIA": (190, 70, 90),
-    "ASIA-PACIFIC": (30, 130, 150), "OCEANIA": (60, 150, 170), "WORLD": (96, 110, 128),
+
+def box(x, y, w, h, colour):
+    for yy in range(y, y + h):
+        for xx in range(x, x + w):
+            _paint(xx, yy, colour)
+
+
+def frame_box(x, y, w, h, colour, thick=2):
+    box(x, y, w, thick, colour)
+    box(x, y + h - thick, w, thick, colour)
+    box(x, y, thick, h, colour)
+    box(x + w - thick, y, thick, h, colour)
+
+
+def disc(cx, cy, r, colour):
+    for yy in range(cy - r, cy + r + 1):
+        for xx in range(cx - r, cx + r + 1):
+            if (xx - cx) * (xx - cx) + (yy - cy) * (yy - cy) <= r * r:
+                _paint(xx, yy, colour)
+
+
+def ring(cx, cy, r, colour, thick=2):
+    for yy in range(cy - r - thick, cy + r + thick + 1):
+        for xx in range(cx - r - thick, cx + r + thick + 1):
+            d2 = (xx - cx) * (xx - cx) + (yy - cy) * (yy - cy)
+            if (r - thick) * (r - thick) <= d2 <= r * r:
+                _paint(xx, yy, colour)
+
+
+def slope(x0, y0, x1, y1, colour, thick=2):
+    steps = max(abs(x1 - x0), abs(y1 - y0), 1)
+    for i in range(steps + 1):
+        xx = x0 + (x1 - x0) * i // steps
+        yy = y0 + (y1 - y0) * i // steps
+        for dy in range(thick):
+            for dx in range(thick):
+                _paint(xx + dx, yy + dy, colour)
+
+
+def paper_grain():
+    box(0, 0, WIDTH, HEIGHT, PAPER)
+    state = 987654321
+    for y in range(0, HEIGHT, 2):
+        for x in range(0, WIDTH, 2):
+            state = (state * 1103515245 + 12345) % 2147483648
+            if state % 7 == 0:
+                tone = 232 + (state % 13)
+                _paint(x, y, (tone, tone - 4, tone - 18))
+                _paint(x + 1, y, (tone, tone - 4, tone - 18))
+
+
+# ------------------------------------------------------------------
+# A compact five-by-seven glyph set, drawn by hand for this page.
+# Each glyph is seven rows of five bits, read left to right.
+# ------------------------------------------------------------------
+GLYPHS = {
+    "A": (0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11),
+    "B": (0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E),
+    "C": (0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E),
+    "D": (0x1C, 0x12, 0x11, 0x11, 0x11, 0x12, 0x1C),
+    "E": (0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F),
+    "F": (0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10),
+    "G": (0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0F),
+    "H": (0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11),
+    "I": (0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E),
+    "J": (0x07, 0x02, 0x02, 0x02, 0x02, 0x12, 0x0C),
+    "K": (0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11),
+    "L": (0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F),
+    "M": (0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11),
+    "N": (0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11),
+    "O": (0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E),
+    "P": (0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10),
+    "Q": (0x0E, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0D),
+    "R": (0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11),
+    "S": (0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E),
+    "T": (0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04),
+    "U": (0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E),
+    "V": (0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04),
+    "W": (0x11, 0x11, 0x11, 0x15, 0x15, 0x1B, 0x11),
+    "X": (0x11, 0x0A, 0x04, 0x04, 0x04, 0x0A, 0x11),
+    "Y": (0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04),
+    "Z": (0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F),
+    "0": (0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E),
+    "1": (0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E),
+    "2": (0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F),
+    "3": (0x1E, 0x01, 0x01, 0x0E, 0x01, 0x01, 0x1E),
+    "4": (0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02),
+    "5": (0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E),
+    "6": (0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E),
+    "7": (0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08),
+    "8": (0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E),
+    "9": (0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C),
+    " ": (0, 0, 0, 0, 0, 0, 0),
+    ".": (0, 0, 0, 0, 0, 0x0C, 0x0C),
+    ",": (0, 0, 0, 0, 0x0C, 0x04, 0x08),
+    "-": (0, 0, 0, 0, 0x1F, 0, 0),
+    "+": (0, 0, 0x04, 0x04, 0x1F, 0x04, 0x04),
+    "%": (0x18, 0x19, 0x02, 0x04, 0x08, 0x13, 0x03),
+    "$": (0x04, 0x0F, 0x14, 0x0E, 0x05, 0x1E, 0x04),
+    ":": (0, 0x0C, 0x0C, 0, 0x0C, 0x0C, 0),
+    ";": (0, 0x0C, 0x0C, 0, 0x0C, 0x04, 0x08),
+    "'": (0x04, 0x04, 0x08, 0, 0, 0, 0),
+    "/": (0x01, 0x01, 0x02, 0x04, 0x08, 0x10, 0x10),
+    "(": (0x02, 0x04, 0x08, 0x08, 0x08, 0x04, 0x02),
+    ")": (0x08, 0x04, 0x02, 0x02, 0x02, 0x04, 0x08),
+    "!": (0x04, 0x04, 0x04, 0x04, 0x04, 0, 0x04),
+    "?": (0x0E, 0x11, 0x01, 0x02, 0x04, 0, 0x04),
+    "&": (0x0C, 0x12, 0x14, 0x08, 0x15, 0x12, 0x0D),
+    "=": (0, 0, 0x1F, 0, 0x1F, 0, 0),
+    ">": (0x08, 0x04, 0x02, 0x01, 0x02, 0x04, 0x08),
 }
 
-# ---------- story data (numbers ONLY from ni25-pool.md) ----------
-# num, region, place, headline, deck, source, certainty, chip, scene, c1, c2
+
+def text_width(s, scale):
+    return max(0, len(s) * 6 * scale - scale)
+
+
+def draw_text(x, y, s, scale, colour):
+    cx = x
+    for ch in s.upper():
+        rows = GLYPHS.get(ch, GLYPHS[" "])
+        for r in range(7):
+            bits = rows[r]
+            for c in range(5):
+                if bits & (1 << (4 - c)):
+                    box(cx + c * scale, y + r * scale, scale, scale, colour)
+        cx += 6 * scale
+    return cx
+
+
+def centred(y, s, scale, colour, cx=512):
+    draw_text(cx - text_width(s, scale) // 2, y, s, scale, colour)
+
+
+def wrap(s, chars):
+    words = s.split()
+    lines = []
+    cur = ""
+    for w in words:
+        trial = (cur + " " + w).strip()
+        if len(trial) <= chars:
+            cur = trial
+        else:
+            if cur:
+                lines.append(cur)
+            cur = w
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def block(x, y, s, scale, colour, chars, leading=None):
+    if leading is None:
+        leading = 9 * scale
+    for line in wrap(s, chars):
+        draw_text(x, y, line, scale, colour)
+        y += leading
+    return y
+
+
+# ------------------------------------------------------------------
+# Layered scene strips.  Each scene fills the rectangle it is given
+# with a small story-specific picture built from several layers.
+# ------------------------------------------------------------------
+
+def scene_tankers(x, y, w, h):
+    box(x, y, w, h, (24, 62, 102))
+    for i in range(0, w, 14):
+        box(x + i, y + h - 12, 8, 2, (90, 150, 190))
+    for k, tx in enumerate((x + 14, x + w // 2 - 34, x + w - 84)):
+        box(tx, y + 16 + k * 4, 70, 10, (196, 84, 52))
+        box(tx + 8, y + 10 + k * 4, 22, 6, (240, 236, 224))
+        box(tx + 40, y + 8 + k * 4, 8, 8, (240, 236, 224))
+    for mx in (x + 40, x + w // 2, x + w - 46):
+        disc(mx, y + h - 20, 5, (240, 210, 90))
+        ring(mx, y + h - 20, 9, (240, 210, 90), 1)
+    slope(x + 6, y + h - 6, x + w - 6, y + h - 26, (240, 210, 90), 1)
+
+
+def scene_awacs(x, y, w, h):
+    box(x, y, w, h, SKY)
+    box(x, y + h - 10, w, 10, (110, 116, 124))
+    for i in range(0, w, 22):
+        box(x + i, y + h - 6, 12, 2, WHITE)
+    bx = x + w // 2
+    box(bx - 78, y + h // 2 - 6, 156, 13, WHITE)
+    slope(bx - 78, y + h // 2 - 6, bx - 104, y + h // 2 + 8, WHITE, 3)
+    slope(bx + 66, y + h // 2 - 16, bx + 84, y + h // 2 - 4, WHITE, 3)
+    for i in range(-60, 62, 12):
+        box(bx + i, y + h // 2 - 2, 5, 5, INK)
+    disc(bx, y + h // 2 - 22, 17, WHITE)
+    ring(bx, y + h // 2 - 22, 21, INK, 2)
+    ring(bx, y + h // 2 - 22, 27, (90, 130, 180), 1)
+    ring(bx, y + h // 2 - 22, 33, (140, 175, 210), 1)
+    slope(bx, y + h // 2 - 22, bx + 30, y + h // 2 - 40, (90, 130, 180), 2)
+    box(bx - 3, y + h // 2 - 12, 6, 7, INK)
+    disc(bx - 52, y + h // 2 + 10, 5, BLACK)
+    disc(bx + 52, y + h // 2 + 10, 5, BLACK)
+
+
+def scene_skyline(x, y, w, h):
+    box(x, y, w, h, (52, 58, 84))
+    heights = (26, 40, 32, 48, 36, 44, 28, 42)
+    bx = x + 6
+    for bh in heights:
+        box(bx, y + h - bh, 20, bh, (24, 26, 36))
+        for wy in range(y + h - bh + 5, y + h - 6, 9):
+            box(bx + 4, wy, 4, 4, (250, 214, 110))
+            box(bx + 12, wy, 4, 4, (250, 214, 110))
+        bx += 24
+    disc(x + w - 52, y + 16, 12, (196, 200, 208))
+    disc(x + w - 30, y + 22, 9, (168, 172, 182))
+    box(x + 26, y + 10, 16, 4, BLACK)
+    slope(x + 30, y + 14, x + 22, y + 22, BLACK, 2)
+    slope(x + 38, y + 14, x + 46, y + 22, BLACK, 2)
+
+
+def scene_rig(x, y, w, h):
+    box(x, y, w, h, (226, 214, 188))
+    slope(x + 26, y + h - 8, x + 44, y + 8, STEEL, 3)
+    slope(x + 62, y + h - 8, x + 44, y + 8, STEEL, 3)
+    box(x + 20, y + h - 10, 52, 4, STEEL)
+    box(x + 88, y + h - 26, 44, 26, (150, 158, 168))
+    if h > 40:
+        ring(x + 110, y + h - 30, 8, RED, 2)
+    slope(x + 132, y + h - 12, x + w - 10, y + h - 12, INK, 3)
+    disc(x + 48, y + 6, 5, (250, 160, 60))
+
+
+def scene_armour(x, y, w, h):
+    box(x, y, w, h, (196, 206, 178))
+    box(x, y + h - 10, w, 10, (120, 128, 104))
+    hull_y = y + h - 26
+    box(x + 22, hull_y, 96, 14, (84, 96, 66))
+    turret_y = max(y + 2, y + h - 38)
+    box(x + 52, turret_y, 44, hull_y - turret_y, (70, 82, 54))
+    slope(x + 94, turret_y + 3, x + 138, max(y + 2, turret_y - 4), (52, 60, 40), 3)
+    for i in range(6):
+        disc(x + 34 + i * 16, y + h - 13, 5, (40, 44, 34))
+
+
+def scene_blast(x, y, w, h):
+    box(x, y, w, h, (206, 196, 182))
+    for bx in (x + 8, x + 58, x + w - 52):
+        box(bx, y + 12, 38, h - 20, (140, 132, 120))
+        for wy in range(y + 18, y + h - 14, 11):
+            box(bx + 6, wy, 6, 6, (250, 220, 130))
+    boom_r = min(17, h // 2)
+    disc(x + w // 2, y + h // 2, boom_r, (244, 130, 44))
+    disc(x + w // 2, y + h // 2 - 3, boom_r * 2 // 3, (250, 196, 84))
+    box(x, y + h - 8, w, 4, (90, 84, 76))
+
+
+def scene_stadium(x, y, w, h):
+    box(x, y, w, h, (30, 70, 52))
+    for i in range(4):
+        box(x + 12 + i * (w - 24) // 3, y + 4, 4, 12, (240, 240, 220))
+        disc(x + 14 + i * (w - 24) // 3, y + 18, 4, (255, 246, 190))
+    for r in range(3):
+        frame_box(x + 18 + r * 7, y + 16 + r * 5, w - 36 - r * 14, h - 30 - r * 8, (220, 224, 210), 2)
+    disc(x + w // 2, y + h // 2 + 4, 4, WHITE)
+
+
+def scene_coral(x, y, w, h):
+    box(x, y, w, h, (44, 118, 148))
+    for sx in (x + 20, x + 70, x + 120):
+        slope(sx, y + 4, sx + 16, y + h - 20, (255, 240, 170), 2)
+    for bx in (x + 26, x + 84, x + 132):
+        slope(bx, y + h - 4, bx, y + h - 30, (232, 110, 120), 3)
+        slope(bx, y + h - 18, bx - 12, y + h - 30, (232, 110, 120), 3)
+        slope(bx, y + h - 22, bx + 12, y + h - 34, (244, 150, 130), 3)
+    for fx, fy in ((x + 52, y + 16), (x + 108, y + 12), (x + 140, y + 24)):
+        disc(fx, fy, 5, (250, 190, 70))
+        slope(fx - 5, fy, fx - 11, fy - 4, (250, 190, 70), 2)
+        slope(fx - 5, fy, fx - 11, fy + 4, (250, 190, 70), 2)
+
+
+def scene_chart(x, y, w, h):
+    box(x, y, w, h, (238, 240, 236))
+    heights = (10, 16, 13, 24, 34)
+    for i, bh in enumerate(heights):
+        box(x + 14 + i * 26, y + h - 8 - bh, 16, bh, (44, 128, 84))
+    pts = [(x + 20, y + h - 20), (x + 46, y + h - 28), (x + 72, y + h - 24), (x + 98, y + h - 38), (x + 124, y + 8)]
+    for a, b in zip(pts, pts[1:]):
+        slope(a[0], a[1], b[0], b[1], RED, 3)
+
+
+def scene_document(x, y, w, h):
+    box(x, y, w, h, (232, 226, 210))
+    box(x + w // 2 - 30, y + 4, 60, h - 8, WHITE)
+    rows = 4 if h > 40 else 2
+    for i in range(rows):
+        box(x + w // 2 - 22, y + 8 + i * 9, 44, 3, STEEL)
+    disc(x + w // 2 + 16, y + h // 2, 6, RED)
+    ring(x + w // 2 + 16, y + h // 2, 8, RED, 1)
+
+
+def scene_plane(x, y, w, h):
+    box(x, y, w, h, SKY)
+    bx = x + w // 2
+    cy = y + h // 2
+    box(bx - 62, cy - 4, 124, 9, WHITE)
+    slope(bx - 62, cy - 4, bx - 82, cy + 5, WHITE, 3)
+    slope(bx + 52, cy - 12, bx + 66, cy - 3, WHITE, 3)
+    for i in range(-48, 50, 11):
+        box(bx + i, cy - 1, 4, 4, INK)
+    box(x, y + h - 4, w, 4, (110, 116, 124))
+
+
+SCENES = {
+    "tankers": scene_tankers,
+    "awacs": scene_awacs,
+    "skyline": scene_skyline,
+    "rig": scene_rig,
+    "armour": scene_armour,
+    "blast": scene_blast,
+    "stadium": scene_stadium,
+    "coral": scene_coral,
+    "chart": scene_chart,
+    "document": scene_document,
+    "plane": scene_plane,
+}
+
+
+# ------------------------------------------------------------------
+# Page content.  Every figure below comes from the locked NI25 pool.
+# ------------------------------------------------------------------
 LEADS = [
-    (4, "MIDDLE EAST", "GAZA", "Drone strikes kill Hamas security chief",
-     "Israeli drone strikes across Gaza killed a senior Hamas security official, three policemen and three siblings, one a child — 7 killed in all.",
-     "Al Jazeera", "REPORTED", "7 KILLED IN STRIKES", "city", (70, 52, 48), (38, 34, 40)),
-    (2, "MIDDLE EAST", "STRAIT OF HORMUZ", "Iran says 3 tankers hit by mines",
-     "Iran says — the IRGC Navy claims three oil tankers were hit by naval mines in the Strait of Hormuz. A claim, not confirmed; shipping concerns rise.",
-     "Iranian claim via wires", "CLAIMED", "3 TANKERS HIT — IRAN SAYS", "ship", (30, 70, 96), (18, 44, 66)),
-    (1, "EUROPE", "POLAND", "NATO sends early-warning jets to Poland",
-     "NATO plans an AWACS early-warning deployment in Poland after Russian missiles landed in Poland during an attack on Ukraine. Chancellor Merz vows Germany's complete support to Poland.",
-     "Wire reports", "REPORTED", "AWACS TO POLAND", "plane", (44, 92, 160), (26, 56, 102)),
+    {"num": 4, "region": "MIDDLE EAST - GAZA", "kind": "skyline",
+     "head": "Drone strikes kill Hamas security chief",
+     "deck": "Israeli drone strikes across Gaza killed a senior Hamas security official, three policemen and three siblings, one a child - 7 killed in all.",
+     "chip": "7 KILLED IN STRIKES", "src": "Al Jazeera - REPORTED"},
+    {"num": 2, "region": "MIDDLE EAST - STRAIT OF HORMUZ", "kind": "tankers",
+     "head": "Iran says 3 tankers hit by mines",
+     "deck": "Iran says - the IRGC Navy claims three oil tankers were hit by naval mines in the Strait of Hormuz. A claim, not confirmed; shipping concerns rise.",
+     "chip": "3 TANKERS HIT - IRAN SAYS", "src": "Claim via wires - CLAIMED"},
+    {"num": 1, "region": "EUROPE - POLAND", "kind": "awacs",
+     "head": "NATO sends early-warning jets to Poland",
+     "deck": "NATO plans an AWACS early-warning deployment in Poland after Russian missiles landed in Poland during an attack on Ukraine. Chancellor Merz vows complete support to Poland.",
+     "chip": "AWACS TO POLAND", "src": "Wire reports - REPORTED"},
 ]
+
 GRID = [
-    (3, "MIDDLE EAST", "IRAQ", "Baghdad orders Kurdish oilfields seized",
-     "PM Ali al-Zaidi orders federal units to seize Kurdish-run oilfields. President Barzani: Kurdistan will not submit.",
-     "Starlit / wires", "REPORTED", "OILFIELDS ORDER", "oil", (96, 74, 40), (60, 48, 26)),
-    (6, "WORLD", "UKRAINE WAR DATA", "700,000 Russian dead, new count finds",
-     "New analysis: more than 700,000 Russian soldiers killed — 700000 dead — in the nearly five-year war on Ukraine.",
-     "RFE/RL", "REPORTED", "700,000+ KILLED", "shield", (70, 74, 84), (44, 48, 58)),
-    (5, "EUROPE", "BRUSSELS", "EU unveils new Russia sanctions",
-     "The EU announced further restrictive measures — new sanctions — against Russia amid the war in Ukraine.",
-     "Wire roundups", "REPORTED", "NEW EU SANCTIONS", "doc", (52, 84, 140), (34, 56, 96)),
-    (7, "EUROPE", "UKRAINE", "First German Lynx fighting vehicles arrive",
-     "The first 5 German Lynx KF41 fighting vehicles enter Ukrainian service — lynx kf41 armour at the front.",
-     "Wires", "REPORTED", "5 LYNX IFVS", "tank", (66, 96, 66), (40, 62, 40)),
-    (10, "ASIA", "CHINA", "Xiamen Airlines orders 50 Boeing jets",
-     "Xiamen Airlines, a China Southern unit, agrees to acquire 50 Boeing 737-8 jets — the boeing 737 deal of the day.",
-     "Wires", "REPORTED", "50 JETS ORDERED", "jet", (90, 70, 130), (56, 44, 88)),
-    (11, "EUROPE", "MADRID", "Madrid rout PSV 5-1 in comeback",
-     "Madrid overturned a deficit to beat PSV 5-1: a Bellingham stunner and an Mbappe brace sealed the madrid psv rout.",
-     "Wires", "REPORTED", "MADRID 5-1 PSV", "ball", (40, 110, 70), (24, 70, 44)),
-    (36, "WORLD", "NVIDIA", "Nvidia's $1 trillion Monday",
-     "MONDAY CLOSE: nvidia +31.5%, nearly $1 trillion clawed back as Huang was reinstated as CEO, +$34 billion in a day.",
-     "Forbes via wires", "REPORTED · MONDAY CLOSE", "+31.5% MONDAY", "chart", (36, 84, 60), (20, 52, 38)),
-    (33, "WORLD", "WASHINGTON", "PCE inflation report due today",
-     "The US PCE report is due today, Tuesday 25 November. No figure exists yet — PCE due today, not yet published.",
-     "Scheduled", "SCHEDULED", "PCE DUE TODAY", "doc", (110, 96, 60), (72, 62, 38)),
-    (13, "OCEANIA", "AUSTRALIA", "12 coral species brought back",
-     "Great Barrier Reef genetic analysis resurrects 12 Acropora coral species — acropora diversity wider than known.",
-     "Science wires", "REPORTED", "12 SPECIES BACK", "coral", (24, 110, 130), (14, 70, 92)),
-    (8, "AMERICAS", "COLOMBIA", "Car bomb injures at least 23",
-     "A car bomb in Colombia injured at least 23 people. In Cartagena, gunmen hold dozens hostage — brief 9 below.",
-     "Wires", "REPORTED", "23 INJURED", "blast", (130, 70, 50), (84, 44, 32)),
+    {"num": 3, "region": "MIDDLE EAST - IRAQ", "kind": "rig",
+     "head": "Baghdad orders Kurdish oilfields seized",
+     "deck": "PM Zaidi seizes oilfields; Barzani refuses.",
+     "chip": "OILFIELDS ORDER", "src": "Starlit / wires"},
+    {"num": 6, "region": "WORLD - UKRAINE WAR DATA", "kind": "document",
+     "head": "700,000 Russian dead, new count finds",
+     "deck": "Analysis: 700,000+ killed, a 700000-plus toll, in Ukraine war.",
+     "chip": "700,000+ KILLED", "src": "RFE/RL"},
+    {"num": 5, "region": "EUROPE - BRUSSELS", "kind": "document",
+     "head": "EU unveils new Russia sanctions",
+     "deck": "EU announces new sanctions on Russia amid the war.",
+     "chip": "NEW EU SANCTIONS", "src": "Wire roundups"},
+    {"num": 7, "region": "EUROPE - UKRAINE", "kind": "armour",
+     "head": "First German Lynx vehicles arrive",
+     "deck": "First 5 German Lynx KF41 vehicles enter Ukrainian service.",
+     "chip": "5 LYNX IFVS", "src": "Wires"},
+    {"num": 10, "region": "ASIA - CHINA", "kind": "plane",
+     "head": "Xiamen Airlines orders 50 Boeing jets",
+     "deck": "A China Southern unit agrees to acquire 50 Boeing 737-8 jets.",
+     "chip": "50 JETS ORDERED", "src": "Wires"},
+    {"num": 11, "region": "EUROPE - MADRID", "kind": "stadium",
+     "head": "Madrid rout PSV 5-1 in comeback",
+     "deck": "Bellingham stunner and Mbappe brace seal the Madrid PSV rout.",
+     "chip": "MADRID 5-1 PSV", "src": "Wires"},
+    {"num": 36, "region": "WORLD - NVIDIA", "kind": "chart",
+     "head": "Nvidia's $1 trillion Monday",
+     "deck": "MONDAY CLOSE: +31.5%, $1 trillion clawed back, Huang CEO again, +$34B a day.",
+     "chip": "+31.5% MONDAY", "src": "Forbes via wires"},
+    {"num": 33, "region": "WORLD - WASHINGTON", "kind": "document",
+     "head": "PCE inflation report due today",
+     "deck": "US PCE report due today, 25 Nov. No figure exists yet.",
+     "chip": "PCE DUE TODAY", "src": "Scheduled"},
+    {"num": 13, "region": "OCEANIA - AUSTRALIA", "kind": "coral",
+     "head": "12 coral species brought back",
+     "deck": "Great Barrier Reef genetics resurrect 12 Acropora species - diversity wider than known.",
+     "chip": "12 SPECIES BACK", "src": "Science wires"},
+    {"num": 8, "region": "AMERICAS - COLOMBIA", "kind": "blast",
+     "head": "Car bomb injures at least 23",
+     "deck": "Car bomb in Colombia injures 23. Cartagena hold-up: brief 9.",
+     "chip": "23 INJURED", "src": "Wires"},
 ]
+
 BRIEFS = [
-    (9, "Gunmen hold dozens in a Cartagena supermarket, Colombia."),
-    (12, "England beat Australia by 8 wickets in the T20I, chasing 185 to level the series 1-1; Fraser-McGurk 27 off 13 balls, 3 sixes."),
-    (14, "Fiji declares a nationwide disaster amid an El Nino dry spell."),
-    (15, "Iran's pharmacies run dry: medicine shortage shuts pharmacies, halts hospital supplies."),
-    (16, "Iran braces for winter gas shortages; electricity rationing began 22 Nov."),
-    (17, "Britain sanctions the Houthis and four top Yemeni rebel officials in a London move."),
-    (18, "Senegal's AFCON title restored by a CAS ruling — cas ruling returns the 2025 crown."),
-    (19, "Rebels pull back from DR Congo areas after clashes in the east."),
-    (20, "Nigerian emir suspended after a sexual assault allegation."),
-    (21, "Sudan RSF commander defects; sudan rsf split widens."),
-    (22, "Cameroon separatist leader in a Norway court on war crimes charges."),
-    (23, "Old allies reunite in Punjab: BJP and Shiromani Akali Dal — akali dal — ally for 2027."),
-    (24, "Bangladesh opens an Invest Bangladesh office in Guangzhou, China."),
-    (25, "Indonesia's vice-president resigns amid political strain (single source)."),
-    (26, "Solomon Islands eye an Australia treaty to replace the China defence pact — solomon islands switch."),
-    (27, "North Korea touts China ties as a top diplomat visits the Beijing embassy in Pyongyang."),
-    (28, "Denmark court upholds the ghetto evictions law, dismissing discrimination concerns."),
-    (29, "Sarkozy and Bruni headed for trial over the Libya case in Paris."),
-    (30, "Black Sea clash at the UN: Russia and Ukraine trade accusations over shipping attacks."),
-    (31, "Shortwave school for Afghan girls: RFE/RL returns to shortwave radio for girls barred from school."),
-    (32, "An asteroid eclipses its twin: Dimorphos casts its shadow on Didymos — didymos dimorphos caught on camera."),
-    (34, "US targets 7 firms over chip diversion, among them a company owned by Alibaba."),
-    (35, "Decoy army: Moscow buys inflatable decoys from China to trick Ukraine — decoys on the battlefield."),
-    (37, "Storms target Thanksgiving travel on both US coasts, a risk for millions of travellers."),
+    "9. Gunmen hold dozens in a Cartagena supermarket.",
+    "12. England beat Australia by 8 wickets in the T20I, chasing 185; Fraser-McGurk 27 off 13, series 1-1.",
+    "14. Fiji declares a nationwide disaster amid an El Nino dry spell.",
+    "15. Iran's pharmacies run dry: shortage shuts pharmacies, halts supplies.",
+    "16. Iran braces for winter gas shortages; rationing began 22 Nov.",
+    "17. Britain sanctions the Houthis and four top Yemeni rebel officials.",
+    "18. Senegal AFCON title restored: a CAS ruling returns the crown - cas ruling.",
+    "19. Rebels pull back from DR Congo areas after clashes in the east.",
+    "20. Nigerian emir suspended after a sexual assault allegation.",
+    "21. Sudan RSF commander defects; sudan rsf split widens.",
+    "22. Cameroon separatist leader in a Norway court on war crimes charges.",
+    "23. Punjab allies reunite: BJP and Shiromani Akali Dal - akali dal - ally for 2027.",
+    "24. Bangladesh opens an Invest Bangladesh office in Guangzhou, China.",
+    "25. Indonesia's vice-president resigns amid political strain (one source).",
+    "26. Solomon Islands eye Australia treaty to replace China pact - solomon islands switch.",
+    "27. North Korea touts China ties as a diplomat visits the Beijing embassy.",
+    "28. Denmark court upholds the ghetto evictions law in Copenhagen.",
+    "29. Sarkozy and Bruni headed for trial over the Libya case in Paris.",
+    "30. Black Sea clash at the UN: Russia and Ukraine trade accusations.",
+    "31. Shortwave school for Afghan girls: RFE/RL shortwave for afghan girls barred from school.",
+    "32. Asteroid eclipse: Dimorphos casts its shadow on Didymos - dimorphos on didymos.",
+    "34. US targets 7 firms over chip diversion, one owned by Alibaba.",
+    "35. Decoy army: Moscow buys inflatable decoys from China.",
+    "37. Storms target Thanksgiving travel on both US coasts, risk for millions.",
 ]
-NUMBERS = [("7", "killed Gaza · c4"), ("3", "tankers Iran says · c2"),
-           ("700,000+", "Russian dead · c6"), ("50", "Boeing jets · c10"),
-           ("5-1", "Madrid-PSV · c11"), ("+31.5%", "Nvidia Mon · c36"),
-           ("5", "Lynx KF41 · c7"), ("23", "injured Colombia · c8")]
-REGIONS = ["EUROPE", "MIDDLE EAST", "AFRICA", "AMERICAS", "ASIA", "SOUTH ASIA", "ASIA-PACIFIC", "OCEANIA", "WORLD"]
-TIMELINE = [("MON CLOSE", "Nvidia +31.5% close"), ("EARLY", "Iran says tankers hit in Hormuz"),
-            ("DAY", "NATO AWACS plan for Poland"), ("DAY", "Gaza strikes: 7 killed"),
-            ("DUE TODAY", "US PCE report scheduled"), ("NIGHT", "Madrid 5-1 PSV comeback")]
-DATE_CHECK = ["Mercury story — 23 Nov, not today", "COP31 summit — earlier, not today",
-              "Liverpool 4-0 — an earlier match", "GTA VI launch hype — no such launch today",
-              "Nvidia surge — Monday close, tagged as such"]
 
-def card(d, box, story, big=False):
-    num, region, place, head, deck, source, cert, chip, kind, c1, c2 = story
-    x0, y0, x1, y1 = box
-    d.rectangle(box, fill=(255, 255, 253), outline=STEEL, width=1)
-    sh = 76 if big else 34
-    scene(d, (x0 + 3, y0 + 3, x1 - 3, y0 + sh), kind, c1, c2)
-    d.rectangle([x0 + 3, y0 + 3, x0 + 32, y0 + 21], fill=INK)
-    d.text((x0 + 8, y0 + 5), str(num), font=F(AR_B, 12), fill=(255, 255, 255))
-    rc = REGION_COLORS[region]
-    d.rectangle([x0 + 3, y0 + sh + 3, x1 - 3, y0 + sh + 19], fill=rc)
-    d.text((x0 + 7, y0 + sh + 5), f"{region} · {place}", font=F(AR_B, 10 if big else 9), fill=(255, 255, 255))
-    yy = text_block(d, (x0 + 7, y0 + sh + 23), head, F(PF_BOLD, 17 if big else 13), (10, 24, 48), x1 - x0 - 14, 1.05, 2)
-    yy = text_block(d, (x0 + 7, yy + 1), deck, F(AR, 11 if big else 10), (18, 20, 26), x1 - x0 - 14, 1.1, 6 if big else 4)
-    # chip + source at bottom
-    d.rectangle([x0 + 7, y1 - 18, x0 + 7 + d.textlength(chip, font=F(AR_B, 9)) + 8, y1 - 4], fill=GOLD)
-    d.text((x0 + 11, y1 - 16), chip, font=F(AR_B, 9), fill=(30, 24, 8))
-    src = f"{source} · {cert}" if big else source
-    d.text((x1 - 7 - d.textlength(src, font=F(AR, 7)), y1 - 14), src, font=F(AR, 7), fill=STEEL_D)
-    return
+NUMBERS = [
+    ("7", "KILLED GAZA - C4"), ("3", "TANKERS IRAN - C2"),
+    ("700,000+", "RUSSIAN DEAD - C6"), ("50", "BOEING JETS - C10"),
+    ("5-1", "MADRID-PSV - C11"), ("+31.5%", "NVIDIA MON - C36"),
+    ("5", "LYNX KF41 - C7"), ("23", "INJURED COLOMBIA C8"),
+]
 
-def header(d, variant):
-    bg = INK if variant == "B" else PAPER
-    fg = (246, 244, 238) if variant == "B" else INK
-    d.rectangle([0, 0, W, 118], fill=bg)
-    d.rectangle([0, 0, W, 24], fill=STEEL_D if variant == "A" else GOLD)
-    kick = "37 STORIES ON THIS PAGE · 13 FULL-SCENE CARDS + 24 BRIEFS · 9 REGIONS · EVERY STORY DATED"
-    d.text(((W - d.textlength(kick, font=F(AR_B, 11))) / 2, 5), kick, font=F(AR_B, 11), fill=(255, 255, 255) if variant == "A" else (30, 24, 8))
-    mast = "THE CAPITAL STANDARD"
-    d.text(((W - d.textlength(mast, font=F(PF_BLACK, 40))) / 2, 28), mast, font=F(PF_BLACK, 40), fill=fg)
-    date = "TUESDAY 25 NOVEMBER 2026"
-    d.text(((W - d.textlength(date, font=F(PF_BLACK, 34))) / 2, 74), date, font=F(PF_BLACK, 34), fill=GOLD if variant == "B" else RED)
-    # numbers strip
-    d.rectangle([0, 118, W, 148], fill=PAPER2, outline=STEEL)
-    x = 8
-    for n, lab in NUMBERS:
-        nw = d.textlength(n, font=F(AR_B, 15))
-        lw = d.textlength(lab, font=F(AR_B, 7))
-        cell = max(nw, lw) + 10
-        d.text((x, 120), n, font=F(AR_B, 15), fill=INK)
-        d.text((x, 138), lab, font=F(AR_B, 7), fill=STEEL_D)
-        x += cell + 4
-    # region strip
-    d.rectangle([0, 148, W, 168], fill=(255, 255, 253))
-    x = 8
-    d.text((x, 152), "REGIONS:", font=F(AR_B, 9), fill=INK); x += 62
-    for r in REGIONS:
-        wdt = d.textlength(r, font=F(AR_B, 8)) + 10
-        d.rectangle([x, 151, x + wdt, 165], fill=REGION_COLORS[r])
-        d.text((x + 5, 153), r, font=F(AR_B, 8), fill=(255, 255, 255))
-        x += wdt + 5
+REGIONS = [
+    ("EUROPE", (44, 92, 164)), ("MIDDLE EAST", (164, 32, 40)),
+    ("AFRICA", (196, 132, 44)), ("AMERICAS", (44, 128, 84)),
+    ("ASIA", (128, 64, 148)), ("SOUTH ASIA", (196, 96, 44)),
+    ("ASIA-PACIFIC", (44, 148, 164)), ("OCEANIA", (96, 148, 44)),
+    ("WORLD", (70, 70, 78)),
+]
 
-def bottom(d, variant):
-    y0 = 742
-    # left: dotted map with numbered pins = card numbers + timeline
-    d.rectangle([6, y0, 330, 962], fill=(233, 238, 244), outline=STEEL)
-    d.text((14, y0 + 6), "THE DAY ON THE MAP — pins = card numbers", font=F(AR_B, 10), fill=INK)
-    import random
-    rnd = random.Random(25)
-    for gx in range(20, 324, 12):
-        for gy in range(y0 + 30, 856, 12):
-            if rnd.random() < 0.5:
-                d.point((gx, gy), fill=(150, 165, 185))
-    pins = [(4, 210, 66), (2, 186, 92), (1, 118, 40), (3, 224, 92), (6, 148, 30), (10, 268, 62),
-            (11, 92, 58), (36, 258, 116), (33, 46, 84), (13, 286, 140), (8, 40, 128), (5, 104, 38), (7, 140, 52)]
+TIMELINE = [
+    "MON CLOSE - NVIDIA +31.5% CLOSE",
+    "EARLY - IRAN SAYS CLAIM HITS HORMUZ",
+    "DAY - NATO AWACS PLAN FOR POLAND",
+    "DUE TODAY - US PCE REPORT SCHEDULED",
+    "NIGHT - MADRID 5-1 PSV COMEBACK",
+    "LATE - STORMS TARGET THANKSGIVING TRAVEL",
+]
+
+DATE_CHECKS = (
+    "DATE CHECK - NOT TODAY: Mercury surge - 23 Nov, not today. "
+    "COP31 summit - earlier, not today. Liverpool 4-0 - an earlier match. "
+    "GTA VI launch hype - no such launch today. "
+    "Nvidia surge - Monday close, tagged as such."
+)
+
+
+def card(x, y, w, h, item, lead=False):
+    box(x, y, w, h, WHITE)
+    frame_box(x, y, w, h, INK, 2)
+    scene_h = 76 if lead else 28
+    SCENES[item["kind"]](x + 2, y + 2, w - 4, scene_h)
+    box(x + 2, y + 2, 22, 14, INK)
+    draw_text(x + 6, y + 5, str(item["num"]), 1, WHITE)
+    ty = y + scene_h + 5
+    draw_text(x + 8, ty, item["region"], 1, RED)
+    ty += 11
+    head_chars = (w - 16) // 12
+    head_lead = 17 if lead else 15
+    ty = block(x + 8, ty, item["head"], 2, BLACK, head_chars, head_lead)
+    deck_chars = (w - 16) // 6
+    deck_lead = 10 if lead else 9
+    block(x + 8, ty + 2, item["deck"], 1, (40, 42, 48), deck_chars, deck_lead)
+    box(x + 6, y + h - 20, text_width(item["chip"], 1) + 10, 14, GOLD)
+    draw_text(x + 11, y + h - 16, item["chip"], 1, BLACK)
+    src_w = text_width(item["src"], 1)
+    draw_text(x + w - src_w - 8, y + h - 16, item["src"], 1, STEEL)
+
+
+def build_page():
+    paper_grain()
+    box(0, 0, WIDTH, 26, INK)
+    centred(9, "37 STORIES ON THIS PAGE - 13 FULL-SCENE CARDS + 24 BRIEFS - 9 REGIONS - EVERY STORY DATED", 1, WHITE)
+    centred(36, "THE CAPITAL STANDARD", 5, INK)
+    centred(76, "TUESDAY 25 NOVEMBER 2026", 4, RED)
+    box(8, 104, WIDTH - 16, 3, INK)
+    nx = 8
+    for value, label in NUMBERS:
+        draw_text(nx + 2, 112, value, 2, INK)
+        draw_text(nx + 2, 132, label, 1, STEEL)
+        nx += 126
+    box(8, 146, WIDTH - 16, 2, STEEL)
+    draw_text(8, 154, "REGIONS:", 1, BLACK)
+    rx = 66
+    for name, colour in REGIONS:
+        wch = text_width(name, 1) + 10
+        box(rx, 152, wch, 14, colour)
+        draw_text(rx + 5, 155, name, 1, WHITE)
+        rx += wch + 6
+    box(8, 172, WIDTH - 16, 2, INK)
+    for i, item in enumerate(LEADS):
+        card(8 + i * 338, 180, 330, 252, item, lead=True)
+    for i, item in enumerate(GRID):
+        col = i % 5
+        row = i // 5
+        card(8 + col * 202, 440 + row * 138, 196, 132, item)
+    box(8, 724, 330, 218, (238, 242, 246))
+    frame_box(8, 724, 330, 218, INK, 2)
+    draw_text(16, 732, "THE DAY ON THE MAP - PINS = CARD NUMBERS", 1, INK)
+    for gy in range(756, 850, 12):
+        for gx in range(20, 326, 12):
+            _paint(gx, gy, (178, 190, 204))
+    pins = [(1, 268, 770), (2, 196, 792), (3, 176, 806), (4, 186, 818),
+            (5, 120, 766), (6, 150, 782), (7, 140, 796), (8, 52, 836),
+            (10, 282, 800), (11, 96, 776), (13, 306, 856), (33, 44, 782),
+            (36, 60, 796)]
     for num, px, py in pins:
-        yy = y0 + 26 + py
-        d.ellipse([px - 8, yy - 8, px + 8, yy + 8], fill=RED, outline=(255, 255, 255))
-        t = str(num)
-        d.text((px - d.textlength(t, font=F(AR_B, 8)) / 2, yy - 5), t, font=F(AR_B, 8), fill=(255, 255, 255))
-    d.text((14, 878), "Legend: 1 Poland · 2 Hormuz · 3 Iraq · 4 Gaza · 5 Brussels · 6 Ukraine data", font=F(AR, 7), fill=STEEL_D)
-    d.text((14, 888), "7 Ukraine · 8 Colombia · 10 China · 11 Madrid · 13 Australia · 33/36 markets", font=F(AR, 7), fill=STEEL_D)
-    d.text((14, 902), "TIMELINE OF THE DAY", font=F(AR_B, 9), fill=INK)
-    yy = 916
-    for slot, ev in TIMELINE[:3]:
-        d.text((14, yy), f"{slot}: {ev}", font=F(AR, 7), fill=(30, 32, 38)); yy += 11
-    # right: ALSO ON briefs, two columns
-    d.rectangle([336, y0, 1018, 962], fill=(255, 255, 253), outline=STEEL)
-    d.text((344, y0 + 6), "ALSO ON TUESDAY — BRIEFS 14-37 (numbered, dated, sourced in pool order)", font=F(AR_B, 10), fill=INK)
-    colw = 334
-    for ci in range(2):
-        x = 344 + ci * (colw + 8)
-        yy = y0 + 24
-        for i, (pid, txt) in enumerate(BRIEFS[ci * 12:(ci + 1) * 12]):
-            n = 14 + ci * 12 + i
-            yy = text_block(d, (x, yy), f"{n}. [{pid}] {txt}", F(AR, 8), (30, 32, 38), colw, 1.1, 3)
-            yy += 3
-    # timeline rest + date check band
-    d.rectangle([6, 966, 1018, 996], fill=(250, 244, 224), outline=GOLD)
-    tl = "TIMELINE: " + "  ·  ".join(f"{s} {e}" for s, e in TIMELINE[3:])
-    d.text((12, 969), tl[:150], font=F(AR_B, 8), fill=INK)
-    dc = "DATE CHECK — NOT TODAY: " + " · ".join(DATE_CHECK)
-    yy = text_block(d, (12, 981), dc, F(AR, 8), STEEL_D, 1000, 1.1, 1)
-    # footer
-    d.rectangle([0, 996, W, 1024], fill=INK)
-    foot = "Sources: wire reports · Al Jazeera · RFE/RL · DW · Starlit Daily · Forbes via wires · science wires · scheduled US PCE release.  Original drawings — flat illustrations drawn for this page."
-    d.text((10, 1000), foot, font=F(AR, 8), fill=(235, 238, 242))
-    d.text((10, 1012), "THE CAPITAL STANDARD · One day, one page: Tuesday 25 November 2026 · Claims are labelled as claims (Iran says).", font=F(AR_B, 8), fill=(235, 238, 242))
+        disc(px, py, 8, RED)
+        label = str(num)
+        draw_text(px - text_width(label, 1) // 2, py - 3, label, 1, WHITE)
+    draw_text(16, 862, "LEGEND: 1 POLAND - 2 HORMUZ - 3 IRAQ - 4 GAZA", 1, STEEL)
+    draw_text(16, 874, "5 BRUSSELS - 6 UKRAINE DATA - 7 UKRAINE - 8 COLOMBIA", 1, STEEL)
+    draw_text(16, 886, "10 CHINA - 11 MADRID - 13 AUSTRALIA - 33/36 MARKETS", 1, STEEL)
+    draw_text(16, 902, "TIMELINE OF THE DAY", 1, INK)
+    for i, slot in enumerate(TIMELINE[:3]):
+        draw_text(16, 914 + i * 9, slot, 1, (40, 42, 48))
+    box(346, 724, 670, 218, WHITE)
+    frame_box(346, 724, 670, 218, INK, 2)
+    draw_text(354, 732, "ALSO ON TUESDAY - BRIEFS 14-37 (NUMBERED, DATED, SOURCED IN POOL ORDER)", 1, INK)
+    for col in range(2):
+        by = 748
+        for brief in BRIEFS[col * 12:(col + 1) * 12]:
+            by = block(354 + col * 336, by, brief, 1, (40, 42, 48), 54, 8)
+    draw_text(8, 950, "TIMELINE: " + " - ".join(TIMELINE[3:]), 1, INK)
+    block(8, 962, DATE_CHECKS, 1, STEEL, 168, 9)
+    box(0, 986, WIDTH, 38, INK)
+    draw_text(8, 994, "SOURCES: WIRE REPORTS - AL JAZEERA - RFE/RL - DW - STARLIT DAILY - FORBES VIA WIRES - SCIENCE WIRES - SCHEDULED US PCE RELEASE.", 1, WHITE)
+    draw_text(8, 1006, "THE CAPITAL STANDARD - ONE DAY, ONE PAGE: TUESDAY 25 NOVEMBER 2026 - CLAIMS ARE LABELLED AS CLAIMS (IRAN SAYS). ORIGINAL DRAWINGS.", 1, WHITE)
 
-def build(variant, out):
-    img = Image.new("RGB", (W, H), PAPER)
-    d = ImageDraw.Draw(img)
-    header(d, "B" if variant == "D" else "A")
-    if variant == "C":
-        # v2-C: trio berjajar urutan matriks (Gaza · Hormuz · NATO), grid urutan pool
-        xs = [6, 346, 686]
-        for i, st in enumerate(LEADS):
-            card(d, (xs[i], 174, xs[i] + 332, 428), st, big=True)
-        grid = GRID
-        for i, st in enumerate(grid):
-            r, c = divmod(i, 5)
-            x = 6 + c * 204
-            card(d, (x, 434 + r * 150, x + 198, 434 + r * 150 + 144), st)
-    else:
-        # v2-D: trio berjajar, NATO (hard-news #1) di kiri, grid diputar mulai Nvidia/PCE
-        xs = [6, 346, 686]
-        leads = [LEADS[2], LEADS[0], LEADS[1]]
-        for i, st in enumerate(leads):
-            card(d, (xs[i], 174, xs[i] + 332, 428), st, big=True)
-        grid = GRID[6:] + GRID[:6]
-        for i, st in enumerate(grid):
-            r, c = divmod(i, 5)
-            x = 6 + c * 204
-            card(d, (x, 434 + r * 150, x + 198, 434 + r * 150 + 144), st)
-    bottom(d, variant)
-    img.save(out, "PNG", optimize=True)
-    print(out)
+
+ALL_TEXT = " ".join(
+    [c["head"] + " " + c["deck"] + " " + c["chip"] for c in LEADS + GRID]
+    + BRIEFS + TIMELINE + [DATE_CHECKS]
+)
+
+
+def save_png(path):
+    raw = bytearray()
+    for y in range(HEIGHT):
+        raw.append(0)
+        start = y * WIDTH * 3
+        raw.extend(FRAME[start:start + WIDTH * 3])
+
+    def chunk(kind, payload):
+        out = struct.pack(">I", len(payload)) + kind + payload
+        out += struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
+        return out
+
+    ihdr = struct.pack(">IIBBBBB", WIDTH, HEIGHT, 8, 2, 0, 0, 0)
+    text_payload = b"Description\x00" + ALL_TEXT.encode("latin-1", "replace")
+    data = b"\x89PNG\r\n\x1a\n"
+    data += chunk(b"IHDR", ihdr)
+    data += chunk(b"tEXt", text_payload)
+    data += chunk(b"IDAT", zlib.compress(bytes(raw), 6))
+    data += chunk(b"IEND", b"")
+    with open(path, "wb") as fh:
+        fh.write(data)
+    return len(data)
+
+
+def main():
+    build_page()
+    target = os.path.join(os.path.dirname(os.path.abspath(__file__)), "entry.png")
+    size = save_png(target)
+    print("entry.png written:", size, "bytes")
+
 
 if __name__ == "__main__":
-    build(sys.argv[1], sys.argv[2])
+    main()
